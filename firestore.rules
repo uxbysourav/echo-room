@@ -27,7 +27,7 @@ service cloud.firestore {
       allow update: if isAuthenticated()
         && (
           // Joining the room (adding self to participants)
-          (request.resource.data.participants.size() <= 2)
+          (request.resource.data.participants.size() <= 50)
           ||
           // Updating peerId or status
           (request.auth.uid in resource.data.participants)
