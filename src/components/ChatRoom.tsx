@@ -19,20 +19,20 @@ const VideoTile = ({ stream, isLocal, name, isMuted, isVideoOn, isHandRaised }: 
   }, [stream]);
 
   return (
-    <div className="group relative flex h-full w-full min-h-[160px] flex-col items-center justify-center overflow-hidden rounded-3xl bg-gray-900 shadow-2xl transition-all border border-white/5">
+    <div className="group relative flex h-full w-full min-h-[160px] flex-col items-center justify-center overflow-hidden rounded-3xl bg-gray-200 dark:bg-gray-900 shadow-2xl transition-all border border-gray-300 dark:border-white/5">
       {isVideoOn || isLocal ? (
         <video ref={videoRef} autoPlay playsInline muted={isLocal} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />
       ) : (
-        <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900 border border-white/5">
-           <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gray-700 shadow-inner">
-             <span className="text-3xl font-bold uppercase tracking-wider text-gray-300">
+        <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-gray-300 to-gray-200 dark:from-gray-800 dark:to-gray-900 border border-gray-300 dark:border-white/5">
+           <div className="flex h-20 w-20 items-center justify-center rounded-full bg-white dark:bg-gray-700 shadow-inner">
+             <span className="text-3xl font-bold uppercase tracking-wider text-gray-500 dark:text-gray-300">
                {name ? name.charAt(0) : '?'}
              </span>
            </div>
         </div>
       )}
       
-      <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl bg-black/50 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-md border border-white/10">
+      <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl bg-white/80 dark:bg-black/50 px-3 py-1.5 text-xs font-medium text-gray-900 dark:text-white backdrop-blur-md border border-gray-200 dark:border-white/10 shadow-sm">
         {isMuted && <MicOff className="h-3.5 w-3.5 text-red-500" />}
         {name} {isLocal && '(You)'}
       </div>
@@ -171,28 +171,24 @@ export default function ChatRoom({ user }: { user: User }) {
     };
   }, [roomId, navigate]);
 
-  // Handle 1hr session timeout
+  // Handle session timeout based on expiresAt
   useEffect(() => {
-    if (!room?.createdAt) return;
-
-    const createdTime = room.createdAt?.toDate ? room.createdAt.toDate().getTime() : new Date().getTime();
-    const ONE_HOUR = 60 * 60 * 1000;
-    const endTime = createdTime + ONE_HOUR;
+    if (!room?.expiresAt) return;
 
     const interval = setInterval(() => {
        const now = new Date().getTime();
-       const remaining = Math.max(0, endTime - now);
+       const remaining = Math.max(0, room.expiresAt - now);
        setTimeLeft(remaining);
 
        if (remaining === 0) {
           clearInterval(interval);
-          alert("Session timeout of 1 hour reached. You will now be disconnected.");
+          alert("Session timeout reached. You will now be disconnected.");
           leaveRoom();
        }
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [room?.createdAt]);
+  }, [room?.expiresAt]);
 
   // Format time
   const formatTime = (ms: number | null) => {
@@ -428,8 +424,21 @@ export default function ChatRoom({ user }: { user: User }) {
   };
 
   const copyCode = () => {
-    navigator.clipboard.writeText(window.location.href);
-    alert('Invite Link copied!');
+    const link = `https://uxbysourav.github.io/echo-meet/#/room/${roomId}`;
+    navigator.clipboard.writeText(link);
+    alert('Invite Link copied!\n\n' + link);
+  };
+
+  const increaseSessionTime = async () => {
+    if (!roomId || !room?.expiresAt) return;
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), {
+        expiresAt: room.expiresAt + 15 * 60 * 1000 // add 15 mins
+      });
+      alert('Added 15 minutes to session!');
+    } catch (err) {
+      console.error('Cannot update time', err);
+    }
   };
 
   // Grid layout helper
@@ -453,10 +462,10 @@ export default function ChatRoom({ user }: { user: User }) {
   };
 
   if (!room) return (
-    <div className="flex h-screen items-center justify-center bg-[#0a0a0a] text-white">
+    <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] text-gray-900 dark:text-white transition-colors duration-300">
       <div className="flex flex-col items-center gap-4">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-blue-500 border-t-transparent" />
-        <p className="text-gray-400 font-medium">Entering meeting...</p>
+        <p className="text-gray-500 dark:text-gray-400 font-medium">Entering meeting...</p>
       </div>
     </div>
   );
@@ -465,18 +474,18 @@ export default function ChatRoom({ user }: { user: User }) {
   const isTimeLow = timeLeft !== null && timeLeft <= 300000; // < 5 mins
 
   return (
-    <div className="relative flex h-screen flex-col bg-[#0a0a0a] font-sans text-white overflow-hidden">
+    <div className="relative flex h-screen flex-col bg-gray-50 dark:bg-[#0a0a0a] font-sans text-gray-900 dark:text-white overflow-hidden transition-colors duration-300">
       
       {/* Floating Header */}
       <header className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between pointer-events-none">
         <div className="flex items-center gap-4 pointer-events-auto">
-           <div className="flex items-center gap-3 rounded-2xl bg-white/5 px-4 py-2.5 backdrop-blur-md shadow-lg border border-white/10">
+           <div className="flex items-center gap-3 rounded-2xl bg-white/80 dark:bg-white/5 px-4 py-2.5 backdrop-blur-md shadow-lg border border-gray-200 dark:border-white/10">
               <div className="flex items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 p-1.5 shadow-sm">
                  <Video className="h-4 w-4 text-white" />
               </div>
-              <span className="font-semibold tracking-tight text-white hidden sm:block">Echo Meet</span>
-              <div className="h-4 w-px bg-white/15 hidden sm:block"></div>
-              <button onClick={copyCode} className="group flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1 text-sm text-gray-300 transition-colors hover:bg-white/10 hover:text-white" title="Copy Meeting Code">
+              <span className="font-semibold tracking-tight text-gray-900 dark:text-white hidden sm:block">Echo Meet</span>
+              <div className="h-4 w-px bg-gray-300 dark:bg-white/15 hidden sm:block"></div>
+              <button onClick={copyCode} className="group flex items-center gap-2 rounded-lg bg-gray-100 dark:bg-white/5 px-2 py-1 text-sm text-gray-600 dark:text-gray-300 transition-colors hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white" title="Copy Meeting Code">
                 <span className="font-mono tracking-wider">{roomId}</span>
                 <Copy className="h-3.5 w-3.5 opacity-50 group-hover:opacity-100 transition-opacity" />
               </button>
@@ -487,22 +496,33 @@ export default function ChatRoom({ user }: { user: User }) {
         <div className="flex items-center gap-4 pointer-events-auto">
            <div className={clsx(
               "flex items-center gap-2 rounded-2xl px-4 py-2.5 backdrop-blur-md shadow-lg border transition-colors",
-              isTimeLow ? "bg-red-500/20 border-red-500/30 text-red-400" : "bg-white/5 border-white/10 text-gray-300"
+              isTimeLow ? "bg-red-500/20 border-red-500/30 text-red-500 dark:text-red-400" : "bg-white dark:bg-white/5 border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300"
            )}>
               <Clock className={clsx("h-4 w-4", isTimeLow && "animate-pulse")} />
               <div className="flex flex-col">
                  <span className="text-xs font-medium leading-none opacity-80 mb-0.5">Session Ends</span>
-                 <span className={clsx("font-mono font-bold tracking-wider leading-none", isTimeLow ? "text-red-400" : "text-white")}>
+                 <span className={clsx("font-mono font-bold tracking-wider leading-none", isTimeLow ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-white")}>
                     {formatTime(timeLeft)}
                  </span>
               </div>
            </div>
+           
+           {/* Admin extend time button */}
+           {room.createdBy === user.uid && (
+             <button
+               onClick={increaseSessionTime}
+               className="flex items-center gap-1 rounded-xl bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 text-xs font-bold transition-colors shadow-lg"
+               title="Add 15 minutes"
+             >
+               <Plus className="h-4 w-4" /> 15m
+             </button>
+           )}
         </div>
       </header>
 
       {/* Main Grid Content */}
       <div className="flex flex-1 overflow-hidden pt-24 pb-28 px-4 md:px-8">
-        <div className={clsx("flex-1 transition-all h-full bg-[#0a0a0a]", tab ? "md:pr-4 md:w-[calc(100%-340px)] hidden md:block" : "w-full")}>
+        <div className={clsx("flex-1 transition-all h-full", tab ? "md:pr-4 md:w-[calc(100%-340px)] hidden md:block" : "w-full")}>
            <div className={clsx("grid gap-4 h-full w-full auto-rows-[1fr] place-content-center", getGridCols(totalVideos))}>
                {/* Local Video */}
                <VideoTile 
@@ -542,11 +562,11 @@ export default function ChatRoom({ user }: { user: User }) {
                 animate={{ x: 0, opacity: 1 }}
                 exit={{ x: '100%', opacity: 0 }}
                 transition={{ type: "spring", damping: 25, stiffness: 200 }}
-                className="absolute right-0 top-0 h-full w-full md:relative md:h-full md:w-[340px] md:rounded-3xl bg-gray-900/80 backdrop-blur-xl border-l md:border border-white/10 flex flex-col z-30 shadow-2xl overflow-hidden"
+                className="absolute right-0 top-0 h-full w-full md:relative md:h-full md:w-[340px] md:rounded-3xl bg-white/90 dark:bg-gray-900/80 backdrop-blur-xl border-l md:border border-gray-200 dark:border-white/10 flex flex-col z-30 shadow-2xl overflow-hidden"
              >
-                <div className="flex items-center justify-between px-6 py-5 border-b border-white/5 bg-white/5">
-                   <h3 className="font-bold text-white tracking-tight">{tab === 'chat' ? 'Meeting Chat' : 'Participants'}</h3>
-                   <button onClick={() => setTab(null)} className="rounded-full p-2 bg-black/20 text-gray-400 transition-colors hover:bg-black/40 hover:text-white">
+                <div className="flex items-center justify-between px-6 py-5 border-b border-gray-200 dark:border-white/5 bg-gray-50 dark:bg-white/5">
+                   <h3 className="font-bold text-gray-900 dark:text-white tracking-tight">{tab === 'chat' ? 'Meeting Chat' : 'Participants'}</h3>
+                   <button onClick={() => setTab(null)} className="rounded-full p-2 bg-gray-200 dark:bg-black/20 text-gray-500 dark:text-gray-400 transition-colors hover:bg-gray-300 dark:hover:bg-black/40 hover:text-gray-900 dark:hover:text-white">
                       <X className="w-5 h-5" />
                    </button>
                 </div>
@@ -556,7 +576,7 @@ export default function ChatRoom({ user }: { user: User }) {
                     <div className="flex-1 overflow-y-auto p-5 space-y-5 custom-scrollbar">
                       {messages.length === 0 && (
                          <div className="flex h-full items-center justify-center text-center">
-                            <div className="text-gray-500">
+                            <div className="text-gray-400 dark:text-gray-500">
                                <MessageSquare className="mx-auto mb-3 h-8 w-8 opacity-20" />
                                <p className="text-sm">No messages yet.<br/>Start the conversation!</p>
                             </div>
@@ -568,7 +588,7 @@ export default function ChatRoom({ user }: { user: User }) {
                          return (
                             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} key={msg.id} className={clsx("flex flex-col", isMe ? "items-end" : "items-start")}>
                                <span className="text-[11px] font-medium text-gray-500 mb-1.5 px-1 uppercase tracking-wider">{isMe ? 'You' : senderProfile.name}</span>
-                               <div className={clsx("max-w-[85%] rounded-2xl px-4 py-2.5 shadow-sm", isMe ? "bg-blue-600 text-white rounded-tr-sm" : "bg-white/10 text-gray-100 rounded-tl-sm border border-white/5")}>
+                               <div className={clsx("max-w-[85%] rounded-2xl px-4 py-2.5 shadow-sm", isMe ? "bg-blue-600 text-white rounded-tr-sm" : "bg-gray-100 dark:bg-white/10 text-gray-800 dark:text-gray-100 rounded-tl-sm border border-gray-200 dark:border-white/5")}>
                                   {msg.type === 'text' && <p className="text-sm leading-relaxed break-words">{msg.text}</p>}
                                   {msg.type === 'file' && (
                                      <a href={msg.fileData} download={msg.fileName} className="flex items-center gap-2 text-sm font-medium hover:underline break-words">
@@ -582,10 +602,10 @@ export default function ChatRoom({ user }: { user: User }) {
                       })}
                       <div ref={messagesEndRef} />
                     </div>
-                    <div className="p-4 border-t border-white/5 bg-black/20">
+                    <div className="p-4 border-t border-gray-200 dark:border-white/5 bg-gray-50 dark:bg-black/20">
                        <form onSubmit={sendMessage} className="flex gap-2">
                           <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
-                          <button type="button" onClick={() => fileInputRef.current?.click()} className="flex shrink-0 items-center justify-center rounded-xl bg-white/5 p-3.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white">
+                          <button type="button" onClick={() => fileInputRef.current?.click()} className="flex shrink-0 items-center justify-center rounded-xl bg-white dark:bg-white/5 border border-gray-200 dark:border-transparent p-3.5 text-gray-500 dark:text-gray-400 transition-colors hover:bg-gray-100 dark:hover:bg-white/10 dark:hover:text-white">
                              <Paperclip className="h-5 w-5" />
                           </button>
                           <input
@@ -593,7 +613,7 @@ export default function ChatRoom({ user }: { user: User }) {
                              value={newMessage}
                              onChange={(e) => setNewMessage(e.target.value)}
                              placeholder="Type message..."
-                             className="flex-1 rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-gray-500 shadow-inner focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                             className="flex-1 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-black/40 px-4 py-3 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 shadow-inner focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                           />
                           <button type="submit" disabled={!newMessage.trim()} className="flex shrink-0 items-center justify-center rounded-xl bg-blue-600 p-3.5 text-white shadow-lg shadow-blue-900/20 transition-all hover:bg-blue-500 disabled:opacity-50 disabled:shadow-none">
                              <Send className="h-5 w-5" />
@@ -604,25 +624,25 @@ export default function ChatRoom({ user }: { user: User }) {
                 )}
 
                 {tab === 'people' && (
-                  <div className="flex-1 overflow-y-auto p-3 space-y-1">
+                  <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
                      {room.participants.map((uid: string) => {
                         const profile = room.profiles?.[uid] || { name: 'Unknown' };
                         const state = room.states?.[uid] || { audio: true, video: true };
                         const isRaised = room.raisedHands?.includes(uid);
                         return (
-                           <div key={uid} className="flex items-center justify-between p-3 transition-colors hover:bg-white/5 rounded-2xl">
+                           <div key={uid} className="flex items-center justify-between p-3 transition-colors hover:bg-gray-100 dark:hover:bg-white/5 rounded-2xl">
                               <div className="flex items-center gap-3">
-                                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gray-700 to-gray-600 text-sm font-bold uppercase tracking-wider shadow-inner">
+                                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-100 to-blue-50 dark:from-gray-700 dark:to-gray-600 text-blue-600 dark:text-gray-100 text-sm font-bold uppercase tracking-wider shadow-inner">
                                     {profile.name.charAt(0)}
                                  </div>
-                                 <span className="text-sm font-medium">{profile.name} {uid === user.uid && <span className="text-gray-500 text-xs ml-1">(You)</span>}</span>
+                                 <span className="text-sm font-medium text-gray-900 dark:text-white">{profile.name} {uid === user.uid && <span className="text-gray-400 dark:text-gray-500 text-xs ml-1">(You)</span>}</span>
                               </div>
                               <div className="flex items-center gap-2.5">
                                  {isRaised && <Hand className="w-4 h-4 text-yellow-500" />}
-                                 <div className={clsx("flex h-8 w-8 items-center justify-center rounded-full", state.video ? "bg-white/5 text-gray-300" : "bg-red-500/10 text-red-400")}>
+                                 <div className={clsx("flex h-8 w-8 items-center justify-center rounded-full", state.video ? "bg-gray-200 dark:bg-white/5 text-gray-600 dark:text-gray-300" : "bg-red-100 dark:bg-red-500/10 text-red-500 dark:text-red-400")}>
                                    {state.video ? <Video className="w-3.5 h-3.5" /> : <VideoOff className="w-3.5 h-3.5" />}
                                  </div>
-                                 <div className={clsx("flex h-8 w-8 items-center justify-center rounded-full", state.audio ? "bg-white/5 text-gray-300" : "bg-red-500/10 text-red-400")}>
+                                 <div className={clsx("flex h-8 w-8 items-center justify-center rounded-full", state.audio ? "bg-gray-200 dark:bg-white/5 text-gray-600 dark:text-gray-300" : "bg-red-100 dark:bg-red-500/10 text-red-500 dark:text-red-400")}>
                                    {state.audio ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
                                  </div>
                               </div>
@@ -647,15 +667,15 @@ export default function ChatRoom({ user }: { user: User }) {
                  initial={{ opacity: 0, x: 50, scale: 0.9 }}
                  animate={{ opacity: 1, x: 0, scale: 1 }}
                  exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
-                 className="bg-gray-900/90 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-2xl flex flex-col min-w-[250px] max-w-[300px] pointer-events-auto"
+                 className="bg-white/90 dark:bg-gray-900/90 backdrop-blur-md border border-gray-200 dark:border-white/10 p-4 rounded-2xl shadow-2xl flex flex-col min-w-[250px] max-w-[300px] pointer-events-auto transition-colors"
                >
                  <div className="flex items-center gap-2 mb-1">
                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold uppercase tracking-wider text-white">
                       {senderProfile.name.charAt(0)}
                    </div>
-                   <span className="text-sm font-semibold text-gray-200">{senderProfile.name}</span>
+                   <span className="text-sm font-semibold text-gray-900 dark:text-gray-200">{senderProfile.name}</span>
                  </div>
-                 <p className="text-sm text-gray-400 line-clamp-2">{toast.text}</p>
+                 <p className="text-sm text-gray-600 dark:text-gray-400 line-clamp-2">{toast.text}</p>
                </motion.div>
              );
           })}
@@ -664,37 +684,37 @@ export default function ChatRoom({ user }: { user: User }) {
 
       {/* Floating Bottom Controls (Island) */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
-        <div className="flex items-center gap-2 sm:gap-3 rounded-3xl bg-white/5 border border-white/10 px-4 py-3 backdrop-blur-xl shadow-2xl">
-           <button onClick={toggleAudio} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", audioEnabled ? "bg-white/10 text-white hover:bg-white/20" : "bg-red-500 text-white hover:bg-red-600")}>
+        <div className="flex items-center gap-2 sm:gap-3 rounded-3xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10 px-4 py-3 backdrop-blur-xl shadow-2xl transition-colors">
+           <button onClick={toggleAudio} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", audioEnabled ? "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20" : "bg-red-500 text-white hover:bg-red-600")}>
               {audioEnabled ? <Mic className="w-5 h-5 sm:w-6 sm:h-6" /> : <MicOff className="w-5 h-5 sm:w-6 sm:h-6" />}
            </button>
 
-           <button onClick={toggleVideo} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", videoEnabled ? "bg-white/10 text-white hover:bg-white/20" : "bg-red-500 text-white hover:bg-red-600")}>
+           <button onClick={toggleVideo} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", videoEnabled ? "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20" : "bg-red-500 text-white hover:bg-red-600")}>
               {videoEnabled ? <Video className="w-5 h-5 sm:w-6 sm:h-6" /> : <VideoOff className="w-5 h-5 sm:w-6 sm:h-6" />}
            </button>
 
-           <button onClick={toggleScreenShare} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm hidden sm:flex", isScreenSharing ? "bg-blue-500 text-white" : "bg-white/10 text-white hover:bg-white/20")}>
+           <button onClick={toggleScreenShare} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm hidden sm:flex", isScreenSharing ? "bg-blue-500 text-white" : "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20")}>
               <MonitorUp className="w-5 h-5 sm:w-6 sm:h-6" />
            </button>
 
-           <button onClick={toggleHand} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", isHandRaised ? "bg-yellow-500 text-white shadow-yellow-500/20" : "bg-white/10 text-white hover:bg-white/20")}>
+           <button onClick={toggleHand} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", isHandRaised ? "bg-yellow-500 text-white shadow-yellow-500/20" : "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20")}>
               <Hand className="w-5 h-5 sm:w-6 sm:h-6" />
            </button>
            
-           <div className="w-px h-10 bg-white/10 mx-1 sm:mx-2"></div>
+           <div className="w-px h-10 bg-gray-300 dark:bg-white/10 mx-1 sm:mx-2"></div>
            
-           <button onClick={() => setTab(tab === 'people' ? null : 'people')} className={clsx("flex h-12 sm:h-14 items-center justify-center px-4 sm:px-5 rounded-full transition-colors font-medium", tab === 'people' ? "bg-white/20 text-white" : "bg-white/5 hover:bg-white/10 text-gray-300")}>
+           <button onClick={() => setTab(tab === 'people' ? null : 'people')} className={clsx("flex h-12 sm:h-14 items-center justify-center px-4 sm:px-5 rounded-full transition-colors font-medium", tab === 'people' ? "bg-gray-300 dark:bg-white/20 text-gray-900 dark:text-white" : "bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300")}>
               <span className="flex items-center gap-2">
                  <Users className="w-5 h-5" />
                  <span>{room.participants.length}</span>
               </span>
            </button>
 
-           <button onClick={() => setTab(tab === 'chat' ? null : 'chat')} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-colors", tab === 'chat' ? "bg-white/20 text-white" : "bg-white/5 hover:bg-white/10 text-gray-300")}>
+           <button onClick={() => setTab(tab === 'chat' ? null : 'chat')} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-colors", tab === 'chat' ? "bg-gray-300 dark:bg-white/20 text-gray-900 dark:text-white" : "bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-600 dark:text-gray-300")}>
               <MessageSquare className="w-5 h-5" />
            </button>
 
-           <div className="w-px h-10 bg-white/10 mx-1 sm:mx-2"></div>
+           <div className="w-px h-10 bg-gray-300 dark:bg-white/10 mx-1 sm:mx-2"></div>
            
            <button onClick={leaveRoom} className="flex h-12 sm:h-14 items-center gap-2 px-5 sm:px-6 rounded-full bg-red-600 hover:bg-red-500 text-white font-bold transition-colors shadow-lg shadow-red-600/20">
               <PhoneOff className="w-5 h-5" />

@@ -19,8 +19,17 @@ export default function App() {
     }
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
+      if (currentUser) {
+        setUser(currentUser);
+        setLoading(false);
+      } else {
+        import('firebase/auth').then(({ signInAnonymously }) => {
+          signInAnonymously(auth).catch((err) => {
+            console.error('Anonymous auth failed:', err);
+            setLoading(false);
+          });
+        });
+      }
     });
     return () => unsubscribe();
   }, []);
