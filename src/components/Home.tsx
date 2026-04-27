@@ -9,6 +9,7 @@ import clsx from 'clsx';
 
 export default function Home({ user }: { user: User | null }) {
   const [joinCode, setJoinCode] = useState('');
+  const [customName, setCustomName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
@@ -39,7 +40,7 @@ export default function Home({ user }: { user: User | null }) {
   };
 
   const getUserProfile = (currentUser: User) => ({
-    name: currentUser.displayName || currentUser.email?.split('@')[0] || `Guest ${Math.floor(Math.random() * 1000)}`,
+    name: customName.trim() || currentUser.displayName || currentUser.email?.split('@')[0] || `Guest ${Math.floor(Math.random() * 1000)}`,
     photo: currentUser.photoURL || ''
   });
 
@@ -155,7 +156,17 @@ export default function Home({ user }: { user: User | null }) {
             </p>
           </div>
 
-          <div className="mt-10">
+          <div className="mt-8 mb-6">
+            <input
+              type="text"
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder="Enter your display name (optional)"
+              className="w-full rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-center text-sm font-medium text-white placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+
+          <div className="mt-4">
             {!user ? (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }} className="space-y-4 text-center">
                 <button

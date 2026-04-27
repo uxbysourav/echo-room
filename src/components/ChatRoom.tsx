@@ -71,6 +71,12 @@ export default function ChatRoom({ user }: { user: User }) {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   
   const [tab, setTab] = useState<'chat' | 'people' | null>(null);
+  const [toasts, setToasts] = useState<any[]>([]);
+  const tabRef = useRef(tab);
+  
+  useEffect(() => {
+    tabRef.current = tab;
+  }, [tab]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -83,7 +89,10 @@ export default function ChatRoom({ user }: { user: User }) {
   useEffect(() => {
     const initMedia = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } }, 
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+        });
         setLocalStream(stream);
       } catch (err: any) {
         console.error('Failed to get local stream', err);
@@ -137,6 +146,23 @@ export default function ChatRoom({ user }: { user: User }) {
       const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMessages(msgs);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+
+      // Handle toasts for new messages when chat is closed
+      if (tabRef.current !== 'chat') {
+        snapshot.docChanges().forEach(change => {
+          if (change.type === 'added') {
+            const data = change.doc.data();
+            // Don't toast our own messages or old messages during initial fetch
+            if (data.senderId !== user.uid && !snapshot.metadata.fromCache) {
+               const newToast = { id: change.doc.id, text: data.text || 'Shared a file', senderId: data.senderId };
+               setToasts(prev => [...prev, newToast]);
+               setTimeout(() => {
+                 setToasts(prev => prev.filter(t => t.id !== change.doc.id));
+               }, 5000);
+            }
+          }
+        });
+      }
     }, (err) => handleFirestoreError(err, OperationType.LIST, `rooms/${roomId}/messages`));
 
     return () => {
@@ -402,8 +428,8 @@ export default function ChatRoom({ user }: { user: User }) {
   };
 
   const copyCode = () => {
-    navigator.clipboard.writeText(roomId || '');
-    alert('Meeting Code copied!');
+    navigator.clipboard.writeText(window.location.href);
+    alert('Invite Link copied!');
   };
 
   // Grid layout helper
@@ -607,6 +633,32 @@ export default function ChatRoom({ user }: { user: User }) {
                 )}
              </motion.div>
           )}
+        </AnimatePresence>
+      </div>
+
+      {/* Toast Notifications */}
+      <div className="absolute top-24 right-4 z-50 flex flex-col gap-3 pointer-events-none">
+        <AnimatePresence>
+          {toasts.map(toast => {
+             const senderProfile = room.profiles?.[toast.senderId] || { name: 'Unknown' };
+             return (
+               <motion.div 
+                 key={toast.id}
+                 initial={{ opacity: 0, x: 50, scale: 0.9 }}
+                 animate={{ opacity: 1, x: 0, scale: 1 }}
+                 exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+                 className="bg-gray-900/90 backdrop-blur-md border border-white/10 p-4 rounded-2xl shadow-2xl flex flex-col min-w-[250px] max-w-[300px] pointer-events-auto"
+               >
+                 <div className="flex items-center gap-2 mb-1">
+                   <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold uppercase tracking-wider text-white">
+                      {senderProfile.name.charAt(0)}
+                   </div>
+                   <span className="text-sm font-semibold text-gray-200">{senderProfile.name}</span>
+                 </div>
+                 <p className="text-sm text-gray-400 line-clamp-2">{toast.text}</p>
+               </motion.div>
+             );
+          })}
         </AnimatePresence>
       </div>
 
