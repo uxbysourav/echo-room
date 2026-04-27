@@ -4,13 +4,15 @@ import { User } from 'firebase/auth';
 import { doc, onSnapshot, updateDoc, collection, addDoc, serverTimestamp, query, orderBy, limit, arrayRemove, deleteField, arrayUnion } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import Peer from 'peerjs';
-import { Mic, MicOff, Video, VideoOff, Hand, MessageSquare, Users, Copy, Send, Paperclip, MonitorUp, PhoneOff, Clock, X, Info, Plus } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, Hand, MessageSquare, Users, Copy, Send, Paperclip, MonitorUp, PhoneOff, Clock, X, Info, Plus, Settings, Pen } from 'lucide-react';
+import { Whiteboard } from './Whiteboard';
 import { motion, AnimatePresence } from 'motion/react';
 import clsx from 'clsx';
 
 // Video Tile Component
 const VideoTile = ({ stream, isLocal, name, isMuted, isVideoOn, isHandRaised }: any) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -18,8 +20,58 @@ const VideoTile = ({ stream, isLocal, name, isMuted, isVideoOn, isHandRaised }: 
     }
   }, [stream]);
 
+  useEffect(() => {
+    if (!stream || !stream.getAudioTracks().length) return;
+    
+    let audioContext: AudioContext;
+    try {
+      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    } catch(e) { return; }
+    
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.minDecibels = -60;
+    analyser.maxDecibels = -10;
+    analyser.smoothingTimeConstant = 0.8;
+    
+    let source: MediaStreamAudioSourceNode;
+    try {
+      source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+    } catch (e) {
+      return;
+    }
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    let animationId: number;
+
+    const checkAudioLevel = () => {
+      // Don't show speaking if explicitly muted
+      if (isMuted) {
+        setIsSpeaking(false);
+      } else {
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = sum / dataArray.length;
+        setIsSpeaking(avg > 15);
+      }
+      animationId = requestAnimationFrame(checkAudioLevel);
+    };
+
+    checkAudioLevel();
+
+    return () => {
+      cancelAnimationFrame(animationId);
+      source?.disconnect();
+      if (audioContext.state !== 'closed') audioContext.close();
+    };
+  }, [stream, isMuted]);
+
   return (
-    <div className="group relative flex h-full w-full min-h-[160px] flex-col items-center justify-center overflow-hidden rounded-3xl bg-gray-200 dark:bg-gray-900 shadow-2xl transition-all border border-gray-300 dark:border-white/5">
+    <div className={clsx("group relative flex h-full w-full min-h-[160px] flex-col items-center justify-center overflow-hidden rounded-3xl shadow-2xl transition-all border-4", isSpeaking ? "border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.5)]" : "border-gray-300 dark:border-white/5 bg-gray-200 dark:bg-gray-900")}>
       {isVideoOn || isLocal ? (
         <video ref={videoRef} autoPlay playsInline muted={isLocal} className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105" />
       ) : (
@@ -32,7 +84,7 @@ const VideoTile = ({ stream, isLocal, name, isMuted, isVideoOn, isHandRaised }: 
         </div>
       )}
       
-      <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl bg-white/80 dark:bg-black/50 px-3 py-1.5 text-xs font-medium text-gray-900 dark:text-white backdrop-blur-md border border-gray-200 dark:border-white/10 shadow-sm">
+      <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-xl bg-white/80 dark:bg-black/50 px-3 py-1.5 text-xs font-medium text-gray-900 dark:text-white backdrop-blur-md border border-gray-200 dark:border-white/10 shadow-sm transition-all">
         {isMuted && <MicOff className="h-3.5 w-3.5 text-red-500" />}
         {name} {isLocal && '(You)'}
       </div>
@@ -70,6 +122,7 @@ export default function ChatRoom({ user }: { user: User }) {
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   
+  const [isWhiteboardOpen, setIsWhiteboardOpen] = useState(false);
   const [tab, setTab] = useState<'chat' | 'people' | null>(null);
   const [toasts, setToasts] = useState<any[]>([]);
   const tabRef = useRef(tab);
@@ -85,43 +138,30 @@ export default function ChatRoom({ user }: { user: User }) {
     localStreamRef.current = localStream;
   }, [localStream]);
 
-  // Request media on mount
+  // Request media only explicitly
+  const [hasJoinedLobby, setHasJoinedLobby] = useState(false);
+
   useEffect(() => {
-    const initMedia = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { width: { ideal: 1280 }, height: { ideal: 720 } }, 
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
-        });
-        setLocalStream(stream);
-      } catch (err: any) {
-        console.error('Failed to get local stream', err);
-        
-        // Show informative error as a toast instead of an alert
-        const errorMsg = err.name === 'NotAllowedError' || err.message?.includes('Permission') || err.message?.includes('denied')
-          ? 'Camera/Microphone permission denied. Joining without media.'
-          : 'No camera or microphone found. Joining without media.';
-          
-        setToasts(prev => [...prev, { id: 'media-err', text: errorMsg, senderId: 'system' }]);
-        
-        // Disable by default if we failed
+    // On mount, just initialize a dummy stream to ensure PeerJS has tracks to start with
+    const initDummyMedia = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const dummyStream = 'captureStream' in canvas ? (canvas as any).captureStream() : new MediaStream();
+        try {
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const dest = audioCtx.createMediaStreamDestination();
+            // Just creating the destination provides an audio track
+            if (dest.stream.getAudioTracks().length > 0) {
+               dummyStream.addTrack(dest.stream.getAudioTracks()[0]);
+            }
+        } catch(e) {}
+        setLocalStream(dummyStream);
         setAudioEnabled(false);
         setVideoEnabled(false);
-
-        // Create a dummy stream so PeerJS can still establish WebRTC and receive incoming media
-        try {
-            const canvas = document.createElement('canvas');
-            canvas.width = 640;
-            canvas.height = 480;
-            const dummyStream = 'captureStream' in canvas ? (canvas as any).captureStream() : new MediaStream();
-            setLocalStream(dummyStream);
-        } catch (e) {
-            setLocalStream(new MediaStream());
-        }
-      }
     };
-    initMedia();
-    
+    initDummyMedia();
+
     return () => {
       localStreamRef.current?.getTracks().forEach(t => t.stop());
     };
@@ -252,6 +292,56 @@ export default function ChatRoom({ user }: { user: User }) {
     };
   }, [peer]);
 
+  const [deviceModalOpen, setDeviceModalOpen] = useState(false);
+  const [devices, setDevices] = useState<{audioInput: MediaDeviceInfo[], videoInput: MediaDeviceInfo[]}>({audioInput: [], videoInput: []});
+  const [selectedAudioId, setSelectedAudioId] = useState<string>('');
+  const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+
+  const loadDevices = async () => {
+     try {
+         const devs = await navigator.mediaDevices.enumerateDevices();
+         setDevices({
+            audioInput: devs.filter(d => d.kind === 'audioinput'),
+            videoInput: devs.filter(d => d.kind === 'videoinput')
+         });
+     } catch (e) { console.error('Failed to enumerate devices', e); }
+  };
+  
+  useEffect(() => {
+     if (deviceModalOpen) loadDevices();
+  }, [deviceModalOpen]);
+
+  const changeDevice = async (audioId: string, videoId: string) => {
+      setSelectedAudioId(audioId);
+      setSelectedVideoId(videoId);
+      try {
+         const newStream = await navigator.mediaDevices.getUserMedia({
+             audio: audioId ? { deviceId: { exact: audioId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } : true,
+             video: videoId ? { deviceId: { exact: videoId }, width: { ideal: 1280 }, height: { ideal: 720 } } : true
+         });
+         
+         // STOP old tracks
+         localStream?.getTracks().forEach(t => t.stop());
+         
+         // Update our stream state
+         setLocalStream(newStream);
+
+         // Mute/Unmute state preservation
+         newStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
+         newStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
+
+         // Update PeerJS sender tracks
+         Object.values(peersRef.current).forEach(call => {
+            const pv = call.peerConnection?.getSenders().find((s: any) => s.track?.kind === 'video');
+            const pa = call.peerConnection?.getSenders().find((s: any) => s.track?.kind === 'audio');
+            if (pv && newStream.getVideoTracks()[0]) pv.replaceTrack(newStream.getVideoTracks()[0]);
+            if (pa && newStream.getAudioTracks()[0]) pa.replaceTrack(newStream.getAudioTracks()[0]);
+         });
+      } catch (e) {
+         console.error("Change device failed", e);
+      }
+  };
+
   // Call new peers deterministically
   useEffect(() => {
     if (!peer || !myPeerId || !room?.peerIds) return;
@@ -282,9 +372,34 @@ export default function ChatRoom({ user }: { user: User }) {
     });
   }, [room?.peerIds, peer, myPeerId, user.uid]);
 
+  const handTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   // Mute/Video Controls
   const toggleAudio = async () => {
     if (localStream) {
+      if (localStream.getAudioTracks().length === 0) {
+          // If no audio track exists, attempt to request one
+          try {
+             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+             const audioTrack = stream.getAudioTracks()[0];
+             localStream.addTrack(audioTrack);
+             
+             Object.values(peersRef.current).forEach(call => {
+                const s = call.peerConnection?.getSenders().find((s: any) => s.track === null || s.track?.kind === 'audio');
+                if (s && s.track === null) {
+                    s.replaceTrack(audioTrack);
+                } else if (!s) {
+                    call.peerConnection?.addTrack(audioTrack, localStream);
+                }
+             });
+             setAudioEnabled(true);
+             if (roomId) updateDoc(doc(db, 'rooms', roomId), { [`states.${user.uid}.audio`]: true });
+          } catch(e) {
+             alert('Could not start microphone');
+          }
+          return;
+      }
+
       const enabled = !audioEnabled;
       localStream.getAudioTracks().forEach(t => t.enabled = enabled);
       setAudioEnabled(enabled);
@@ -298,6 +413,29 @@ export default function ChatRoom({ user }: { user: User }) {
 
   const toggleVideo = async () => {
     if (localStream) {
+      if (localStream.getVideoTracks().length === 0) {
+          // If no video track exists, attempt to request one
+          try {
+             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+             const videoTrack = stream.getVideoTracks()[0];
+             localStream.addTrack(videoTrack);
+             
+             Object.values(peersRef.current).forEach(call => {
+                const s = call.peerConnection?.getSenders().find((s: any) => s.track === null || s.track?.kind === 'video');
+                if (s && s.track === null) {
+                    s.replaceTrack(videoTrack);
+                } else if (!s) {
+                    call.peerConnection?.addTrack(videoTrack, localStream);
+                }
+             });
+             setVideoEnabled(true);
+             if (roomId) updateDoc(doc(db, 'rooms', roomId), { [`states.${user.uid}.video`]: true });
+          } catch(e) {
+             alert('Could not start camera');
+          }
+          return;
+      }
+
       const enabled = !videoEnabled;
       localStream.getVideoTracks().forEach(t => t.enabled = enabled);
       setVideoEnabled(enabled);
@@ -318,10 +456,66 @@ export default function ChatRoom({ user }: { user: User }) {
     if (isRaised) {
       const currentHands = room?.raisedHands || [];
       await updateDoc(roomRef, { raisedHands: [...new Set([...currentHands, user.uid])] });
+      
+      // Auto-lower hand after 1 minute (60,000 ms)
+      if (handTimerRef.current) clearTimeout(handTimerRef.current);
+      handTimerRef.current = setTimeout(async () => {
+         setIsHandRaised(false);
+         try {
+           await updateDoc(doc(db, 'rooms', roomId), { raisedHands: arrayRemove(user.uid) });
+         } catch(e) {}
+      }, 60000);
     } else {
+      if (handTimerRef.current) clearTimeout(handTimerRef.current);
       await updateDoc(roomRef, { raisedHands: arrayRemove(user.uid) });
     }
   };
+
+  const kickUser = async (uidToKick: string) => {
+    if (!roomId || room?.createdBy !== user.uid) return;
+    if (confirm('Are you sure you want to kick this user?')) {
+       try {
+           await updateDoc(doc(db, 'rooms', roomId), {
+               participants: arrayRemove(uidToKick),
+               [`peerIds.${uidToKick}`]: deleteField(),
+               raisedHands: arrayRemove(uidToKick)
+           });
+       } catch (e) {}
+    }
+  };
+
+  // Exit on tab close
+  useEffect(() => {
+     const handleBeforeUnload = () => {
+         if (roomId && room?.participants?.includes(user.uid)) {
+             try {
+                 // Try best effort synchronous-ish call to update firestore
+                 // Not guaranteed, but often works.
+                 const roomRef = doc(db, 'rooms', roomId);
+                 updateDoc(roomRef, {
+                    participants: arrayRemove(user.uid),
+                    [`peerIds.${user.uid}`]: deleteField(),
+                    raisedHands: arrayRemove(user.uid)
+                 }).catch(() => {});
+             } catch(e) {}
+         }
+     };
+     window.addEventListener('beforeunload', handleBeforeUnload);
+     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [roomId, room?.participants, user.uid]);
+
+  // Handle getting kicked
+  const wasParticipantRef = useRef(false);
+  useEffect(() => {
+     if (room && room.participants) {
+        const currentlyParticipant = room.participants.includes(user.uid);
+        if (wasParticipantRef.current && !currentlyParticipant) {
+            alert('You have been removed from the meeting.');
+            leaveRoom();
+        }
+        wasParticipantRef.current = currentlyParticipant;
+     }
+  }, [room?.participants, user.uid]);
 
   const toggleScreenShare = async () => {
     try {
@@ -463,21 +657,58 @@ export default function ChatRoom({ user }: { user: User }) {
     return 'unknown';
   };
 
-  const [joinName, setJoinName] = useState('');
+  const [joinName, setJoinName] = useState(user.displayName || '');
   const [isJoining, setIsJoining] = useState(false);
 
-  const handleJoinDirectly = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleJoin = async (useMedia: boolean) => {
     if (!roomId || !user) return;
     setIsJoining(true);
+    
+    let initialAudio = false;
+    let initialVideo = false;
+
+    if (useMedia) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            });
+            
+            // replace in localStream
+            const audioTrack = stream.getAudioTracks()[0];
+            const videoTrack = stream.getVideoTracks()[0];
+            
+            // update PeerJS senders if already connected, though here we might not have peers yet
+            Object.values(peersRef.current).forEach(call => {
+                const pv = call.peerConnection?.getSenders().find((s: any) => s.track?.kind === 'video');
+                const pa = call.peerConnection?.getSenders().find((s: any) => s.track?.kind === 'audio');
+                if (pv && videoTrack) pv.replaceTrack(videoTrack);
+                if (pa && audioTrack) pa.replaceTrack(audioTrack);
+            });
+            
+            // Assign new stream and stop dummy
+            localStream?.getTracks().forEach(t => t.stop());
+            setLocalStream(stream);
+
+            initialAudio = true;
+            initialVideo = true;
+            setAudioEnabled(true);
+            setVideoEnabled(true);
+        } catch(e) {
+            console.error('Could not acquire media', e);
+            alert('Could not acquire media. Joining without camera/microphone.');
+        }
+    }
+
     try {
       const profileName = joinName.trim() || user.displayName || user.email?.split('@')[0] || `Guest ${Math.floor(Math.random() * 1000)}`;
       
       await updateDoc(doc(db, 'rooms', roomId), {
         participants: arrayUnion(user.uid),
         [`profiles.${user.uid}`]: { name: profileName, photo: user.photoURL || '' },
-        [`states.${user.uid}`]: { audio: audioEnabled, video: videoEnabled }
+        [`states.${user.uid}`]: { audio: initialAudio, video: initialVideo }
       });
+      setHasJoinedLobby(true);
     } catch (err: any) {
       console.error("Could not join directly", err);
     } finally {
@@ -494,9 +725,7 @@ export default function ChatRoom({ user }: { user: User }) {
     </div>
   );
 
-  const isParticipant = room.participants?.includes(user.uid);
-
-  if (!isParticipant) {
+  if (!hasJoinedLobby) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] text-gray-900 dark:text-white transition-colors duration-300 px-4">
         <div className="w-full max-w-sm rounded-3xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 p-8 shadow-2xl backdrop-blur-xl">
@@ -505,26 +734,33 @@ export default function ChatRoom({ user }: { user: User }) {
                  <Video className="h-8 w-8 text-white" />
              </div>
            </div>
-           <h2 className="mb-2 text-center text-2xl font-bold tracking-tight text-gray-900 dark:text-white">Join Meeting</h2>
-           <p className="mb-6 text-center text-sm text-gray-500 dark:text-gray-400">You've been invited to join this room.</p>
+           <h2 className="mb-2 text-center text-2xl font-bold tracking-tight text-gray-900 dark:text-white">Ready to Join?</h2>
+           <p className="mb-6 text-center text-sm text-gray-500 dark:text-gray-400">Choose how you want to enter the room.</p>
            
-           <form onSubmit={handleJoinDirectly} className="space-y-4">
+           <div className="space-y-4">
               <input
                 type="text"
                 value={joinName}
                 onChange={(e) => setJoinName(e.target.value)}
-                placeholder="Enter your display name (optional)"
+                placeholder="Enter your display name"
                 className="w-full rounded-2xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/40 px-4 py-4 text-center text-sm font-medium text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
                 autoFocus
               />
               <button
-                type="submit"
+                onClick={() => handleJoin(true)}
                 disabled={isJoining}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 py-4 font-semibold text-white transition-all hover:bg-blue-500 disabled:opacity-50"
               >
-                {isJoining ? 'Joining...' : 'Join Now'}
+                {isJoining ? 'Joining...' : 'Join with Camera & Mic'}
               </button>
-           </form>
+              <button
+                onClick={() => handleJoin(false)}
+                disabled={isJoining}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gray-200 dark:bg-white/10 px-4 py-4 font-semibold text-gray-900 dark:text-white transition-all hover:bg-gray-300 dark:hover:bg-white/20 disabled:opacity-50"
+              >
+                Join without Media (Listen Only)
+              </button>
+           </div>
         </div>
       </div>
     );
@@ -581,9 +817,14 @@ export default function ChatRoom({ user }: { user: User }) {
       </header>
 
       {/* Main Grid Content */}
-      <div className="flex flex-1 overflow-hidden pt-24 pb-28 px-4 md:px-8">
-        <div className={clsx("flex-1 transition-all h-full", tab ? "md:pr-4 md:w-[calc(100%-340px)] hidden md:block" : "w-full")}>
-           <div className={clsx("grid gap-4 h-full w-full auto-rows-[1fr] place-content-center", getGridCols(totalVideos))}>
+      <div className="flex flex-1 overflow-hidden pt-24 pb-28 px-4 md:px-8 gap-4">
+        <div className={clsx("flex flex-1 transition-all h-full gap-4", tab ? "md:w-[calc(100%-340px)] hidden md:flex" : "w-full flex-col md:flex-row")}>
+           {isWhiteboardOpen && (
+              <div className="flex-[3] h-full rounded-3xl overflow-hidden shadow-2xl border border-gray-200 dark:border-white/10 z-10 bg-white ring-4 ring-offset-4 ring-blue-500/50">
+                 <Whiteboard roomId={roomId!} />
+              </div>
+           )}
+           <div className={clsx("flex-1 grid gap-4 h-full w-full auto-rows-[1fr]", isWhiteboardOpen ? "md:flex-[1] overflow-y-auto" : "place-content-center", !isWhiteboardOpen && getGridCols(totalVideos))}>
                {/* Local Video */}
                <VideoTile 
                   stream={localStream} 
@@ -596,7 +837,7 @@ export default function ChatRoom({ user }: { user: User }) {
                {/* Remote Videos */}
                {Object.entries(remoteStreams).map(([peerId, stream]) => {
                   const uid = resolveUid(peerId);
-                  const profile = room.profiles?.[uid] || { name: 'Unknown' };
+                  const profile = room.profiles?.[uid] || { name: 'Guest' };
                   const state = room.states?.[uid] || { audio: true, video: true };
                   const isRaised = room.raisedHands?.includes(uid);
                   
@@ -644,7 +885,7 @@ export default function ChatRoom({ user }: { user: User }) {
                       )}
                       {messages.map((msg) => {
                          const isMe = msg.senderId === user.uid;
-                         const senderProfile = room.profiles?.[msg.senderId] || { name: 'Unknown' };
+                         const senderProfile = room.profiles?.[msg.senderId] || { name: 'Guest' };
                          return (
                             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} key={msg.id} className={clsx("flex flex-col", isMe ? "items-end" : "items-start")}>
                                <span className="text-[11px] font-medium text-gray-500 mb-1.5 px-1 uppercase tracking-wider">{isMe ? 'You' : senderProfile.name}</span>
@@ -705,6 +946,11 @@ export default function ChatRoom({ user }: { user: User }) {
                                  <div className={clsx("flex h-8 w-8 items-center justify-center rounded-full", state.audio ? "bg-gray-200 dark:bg-white/5 text-gray-600 dark:text-gray-300" : "bg-red-100 dark:bg-red-500/10 text-red-500 dark:text-red-400")}>
                                    {state.audio ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
                                  </div>
+                                 {room.createdBy === user.uid && uid !== user.uid && (
+                                   <button onClick={() => kickUser(uid)} className="ml-1 rounded-full bg-red-100 dark:bg-red-500/10 p-2 text-red-500 hover:bg-red-200 dark:hover:bg-red-500/20 transition-colors" title="Kick user">
+                                     <X className="w-4 h-4" />
+                                   </button>
+                                 )}
                               </div>
                            </div>
                         );
@@ -720,7 +966,7 @@ export default function ChatRoom({ user }: { user: User }) {
       <div className="absolute top-24 right-4 z-50 flex flex-col gap-3 pointer-events-none">
         <AnimatePresence>
           {toasts.map(toast => {
-             const senderProfile = room.profiles?.[toast.senderId] || { name: 'Unknown' };
+             const senderProfile = room.profiles?.[toast.senderId] || { name: 'Guest' };
              return (
                <motion.div 
                  key={toast.id}
@@ -742,6 +988,59 @@ export default function ChatRoom({ user }: { user: User }) {
         </AnimatePresence>
       </div>
 
+      {/* Device Settings Modal */}
+      <AnimatePresence>
+        {deviceModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className="w-full max-w-md rounded-3xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-white/10 p-6 shadow-2xl"
+            >
+               <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-bold text-lg text-gray-900 dark:text-white">Device Settings</h3>
+                  <button onClick={() => setDeviceModalOpen(false)} className="rounded-full p-2 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
+                     <X className="w-5 h-5" />
+                  </button>
+               </div>
+               
+               <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Microphone</label>
+                    <select 
+                      value={selectedAudioId}
+                      onChange={(e) => changeDevice(e.target.value, selectedVideoId)}
+                      className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    >
+                       {devices.audioInput.map(d => (
+                          <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${d.deviceId.substring(0,5)}`}</option>
+                       ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Camera</label>
+                    <select 
+                      value={selectedVideoId}
+                      onChange={(e) => changeDevice(selectedAudioId, e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-2.5 text-sm text-gray-900 dark:text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    >
+                       {devices.videoInput.map(d => (
+                          <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.substring(0,5)}`}</option>
+                       ))}
+                    </select>
+                  </div>
+               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Floating Bottom Controls (Island) */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 w-full max-w-fit px-2">
         <div className="flex items-center justify-center gap-1.5 sm:gap-3 rounded-3xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10 px-3 sm:px-4 py-3 backdrop-blur-xl shadow-2xl transition-colors overflow-x-auto custom-scrollbar">
@@ -752,6 +1051,10 @@ export default function ChatRoom({ user }: { user: User }) {
            <button onClick={toggleVideo} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", videoEnabled ? "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20" : "bg-red-500 text-white hover:bg-red-600")}>
               {videoEnabled ? <Video className="w-5 h-5 sm:w-6 sm:h-6" /> : <VideoOff className="w-5 h-5 sm:w-6 sm:h-6" />}
            </button>
+           
+           <button onClick={() => setDeviceModalOpen(true)} className="flex w-10 h-10 sm:w-12 sm:h-12 items-center justify-center rounded-full bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/10 transition-colors shadow-sm">
+              <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
+           </button>
 
            <button onClick={toggleScreenShare} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm hidden sm:flex", isScreenSharing ? "bg-blue-500 text-white" : "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20")}>
               <MonitorUp className="w-5 h-5 sm:w-6 sm:h-6" />
@@ -759,6 +1062,10 @@ export default function ChatRoom({ user }: { user: User }) {
 
            <button onClick={toggleHand} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm", isHandRaised ? "bg-yellow-500 text-white shadow-yellow-500/20" : "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20")}>
               <Hand className="w-5 h-5 sm:w-6 sm:h-6" />
+           </button>
+
+           <button onClick={() => setIsWhiteboardOpen(!isWhiteboardOpen)} className={clsx("flex w-12 h-12 sm:w-14 sm:h-14 items-center justify-center rounded-full transition-all duration-300 shadow-sm hidden sm:flex", isWhiteboardOpen ? "bg-blue-500 text-white" : "bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-white hover:bg-gray-300 dark:hover:bg-white/20")}>
+              <Pen className="w-5 h-5 sm:w-6 sm:h-6" />
            </button>
            
            <div className="w-px h-10 bg-gray-300 dark:bg-white/10 mx-1 sm:mx-2"></div>
