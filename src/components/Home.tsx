@@ -15,7 +15,19 @@ export default function Home({ user }: { user: User | null }) {
   const [showInfo, setShowInfo] = useState(false);
   
   // Theme state
-  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
+  const [isDark, setIsDark] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved) return saved === 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+  
+  useEffect(() => {
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDark]);
   const navigate = useNavigate();
 
   const toggleTheme = () => {

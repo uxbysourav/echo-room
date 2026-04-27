@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { User } from 'firebase/auth';
-import { doc, onSnapshot, updateDoc, collection, addDoc, serverTimestamp, query, orderBy, limit, arrayRemove, deleteField } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, collection, addDoc, serverTimestamp, query, orderBy, limit, arrayRemove, deleteField, arrayUnion } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import Peer from 'peerjs';
 import { Mic, MicOff, Video, VideoOff, Hand, MessageSquare, Users, Copy, Send, Paperclip, MonitorUp, PhoneOff, Clock, X, Info } from 'lucide-react';
@@ -97,25 +97,27 @@ export default function ChatRoom({ user }: { user: User }) {
       } catch (err: any) {
         console.error('Failed to get local stream', err);
         
-        // Show informative error based on why it failed
-        if (err.name === 'NotAllowedError' || err.message?.includes('Permission') || err.message?.includes('denied')) {
-           alert('Camera/Microphone permission denied.\n\nPlease click the camera icon in your browser address bar to allow permissions.\n\nIf you are using the embedded preview, please open the application in a new tab by clicking the "Open in new tab" icon at the top right.');
-        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-           alert('No camera or microphone found on your device. You can still join the room to text chat.');
-        } else {
-           alert(`Could not access media devices: ${err.message}`);
-        }
+        // Show informative error as a toast instead of an alert
+        const errorMsg = err.name === 'NotAllowedError' || err.message?.includes('Permission') || err.message?.includes('denied')
+          ? 'Camera/Microphone permission denied. Joining without media.'
+          : 'No camera or microphone found. Joining without media.';
+          
+        setToasts(prev => [...prev, { id: 'media-err', text: errorMsg, senderId: 'system' }]);
         
         // Disable by default if we failed
         setAudioEnabled(false);
         setVideoEnabled(false);
 
         // Create a dummy stream so PeerJS can still establish WebRTC and receive incoming media
-        const canvas = document.createElement('canvas');
-        canvas.width = 640;
-        canvas.height = 480;
-        const dummyStream = canvas.captureStream();
-        setLocalStream(dummyStream);
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 480;
+            const dummyStream = 'captureStream' in canvas ? (canvas as any).captureStream() : new MediaStream();
+            setLocalStream(dummyStream);
+        } catch (e) {
+            setLocalStream(new MediaStream());
+        }
       }
     };
     initMedia();
@@ -461,6 +463,28 @@ export default function ChatRoom({ user }: { user: User }) {
     return 'unknown';
   };
 
+  const [joinName, setJoinName] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
+
+  const handleJoinDirectly = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roomId || !user) return;
+    setIsJoining(true);
+    try {
+      const profileName = joinName.trim() || user.displayName || user.email?.split('@')[0] || `Guest ${Math.floor(Math.random() * 1000)}`;
+      
+      await updateDoc(doc(db, 'rooms', roomId), {
+        participants: arrayUnion(user.uid),
+        [`profiles.${user.uid}`]: { name: profileName, photo: user.photoURL || '' },
+        [`states.${user.uid}`]: { audio: audioEnabled, video: videoEnabled }
+      });
+    } catch (err: any) {
+      console.error("Could not join directly", err);
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
   if (!room) return (
     <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] text-gray-900 dark:text-white transition-colors duration-300">
       <div className="flex flex-col items-center gap-4">
@@ -469,6 +493,42 @@ export default function ChatRoom({ user }: { user: User }) {
       </div>
     </div>
   );
+
+  const isParticipant = room.participants?.includes(user.uid);
+
+  if (!isParticipant) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-[#0a0a0a] text-gray-900 dark:text-white transition-colors duration-300 px-4">
+        <div className="w-full max-w-sm rounded-3xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 p-8 shadow-2xl backdrop-blur-xl">
+           <div className="mb-6 flex justify-center">
+             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 shadow-inner">
+                 <Video className="h-8 w-8 text-white" />
+             </div>
+           </div>
+           <h2 className="mb-2 text-center text-2xl font-bold tracking-tight text-gray-900 dark:text-white">Join Meeting</h2>
+           <p className="mb-6 text-center text-sm text-gray-500 dark:text-gray-400">You've been invited to join this room.</p>
+           
+           <form onSubmit={handleJoinDirectly} className="space-y-4">
+              <input
+                type="text"
+                value={joinName}
+                onChange={(e) => setJoinName(e.target.value)}
+                placeholder="Enter your display name (optional)"
+                className="w-full rounded-2xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/40 px-4 py-4 text-center text-sm font-medium text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors"
+                autoFocus
+              />
+              <button
+                type="submit"
+                disabled={isJoining}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 py-4 font-semibold text-white transition-all hover:bg-blue-500 disabled:opacity-50"
+              >
+                {isJoining ? 'Joining...' : 'Join Now'}
+              </button>
+           </form>
+        </div>
+      </div>
+    );
+  }
 
   const myProfile = room.profiles?.[user.uid] || { name: 'You' };
   const isTimeLow = timeLeft !== null && timeLeft <= 300000; // < 5 mins
